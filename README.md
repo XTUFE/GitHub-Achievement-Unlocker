@@ -5,6 +5,14 @@
 I'm building unlockers for all GitHub achievements, and soon also for other platforms and apps. Stay tuned and show your support! 🙌
 
 
+⚠️ Disclaimer
+
+    🧠 This project is for educational and testing purposes only.
+    🚫 Do not abuse the GitHub API or use this bot to spam other users or repositories.
+    ✅ This tool is designed to run responsibly on your own repositories to help you understand GitHub automation, contribution tracking, and achievements.
+    🧪 Use it to learn, experiment, or test GitHub workflows — not to game the system or violate GitHub's Terms of Service.
+
+
 🦈 Pull Shark Achievement Unlocker
 
 Unlock GitHub’s Pull Shark achievement automatically by creating and merging pull requests on a loop.
