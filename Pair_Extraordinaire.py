@@ -5,14 +5,17 @@ import random
 import string
 
 # === GitHub Config ===
-TOKEN = "YOUR GITHUB TOKEN"  # replace with your token
-OWNER = "YOUR GITHUB USERNAME"                # your GitHub username
-REPO = "YOUR TEST REPO"                  # your repo name
-FILENAME = "README.md"         # file to edit
+TOKEN = "YOUR_GITHUB_TOKEN"
 
-# === Co-author Info ===
-COAUTHOR_NAME = "YOUR FRIEND OR OTHER COAUTHOR USERNAME"
-COAUTHOR_EMAIL = "YOUR FRIEND OR OTHER COAUTHOR EMAIL"
+OWNER = "ZaidShaikh-2005"
+
+REPO = "pair-extraordinaire-test"
+
+FILENAME = "README.md"
+
+COAUTHOR_NAME = "zaidshaikh25-bit"
+
+COAUTHOR_EMAIL = "zaid.shaikh25@spit.ac.in"
 
 # === GitHub API Headers ===
 headers = {
