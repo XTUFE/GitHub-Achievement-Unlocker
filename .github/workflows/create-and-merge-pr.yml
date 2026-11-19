@@ -57,6 +57,8 @@ jobs:
             [[ "$branch" == "$BASE_BRANCH" ]] && continue
             [[ "$branch" == "HEAD" ]] && continue
 
+            # Only consider branches already based on the current main.
+            git merge-base --is-ancestor "origin/$BASE_BRANCH" "$ref" || continue
             ahead="$(git rev-list --count "origin/$BASE_BRANCH..$ref")"
             if (( ahead > best_ahead )); then
               best_ahead="$ahead"
