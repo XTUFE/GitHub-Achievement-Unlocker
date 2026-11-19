@@ -3,24 +3,15 @@ name: Create and Merge Pull Request
 on:
   workflow_dispatch:
     inputs:
-      head_branch:
-        description: "Existing branch containing the actual changes"
-        required: true
-        type: string
-      base_branch:
-        description: "Target branch"
-        required: true
-        default: "main"
-        type: string
       pr_title:
         description: "Pull request title"
         required: true
-        default: "Update project"
+        default: "Automated project update"
         type: string
       pr_body:
         description: "Short description of the changes"
         required: true
-        default: "Automated pull request for the changes on the selected branch."
+        default: "Automatically selected branch with existing commits ahead of main."
         type: string
       merge_method:
         description: "How to merge the pull request"
@@ -37,7 +28,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: create-merge-pr-${{ github.repository }}-${{ inputs.head_branch }}
+  group: create-merge-pr-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -45,50 +36,52 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Validate branches and repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          HEAD_BRANCH: ${{ inputs.head_branch }}
-          BASE_BRANCH: ${{ inputs.base_branch }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "$HEAD_BRANCH" == "$BASE_BRANCH" ]]; then
-            echo "::error::Head and base branches must be different."
-            exit 1
-          fi
-          gh api "repos/$GH_REPO/branches/$HEAD_BRANCH" >/dev/null
-          gh api "repos/$GH_REPO/branches/$BASE_BRANCH" >/dev/null
-          echo "Branches validated."
+      - name: Check out all branches
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Check for actual changes
-        id: changes
+      - name: Find branch containing real commits
+        id: select
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          HEAD_BRANCH: ${{ inputs.head_branch }}
-          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_BRANCH: main
         shell: bash
         run: |
           set -euo pipefail
-          comparison="$(gh api "repos/$GH_REPO/compare/$BASE_BRANCH...$HEAD_BRANCH" --jq '.status')"
-          if [[ "$comparison" == "identical" || "$comparison" == "behind" ]]; then
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --prune
+          best_branch=""
+          best_ahead=0
+
+          while IFS= read -r ref; do
+            branch="${ref#origin/}"
+            [[ "$branch" == "$BASE_BRANCH" ]] && continue
+            [[ "$branch" == "HEAD" ]] && continue
+
+            ahead="$(git rev-list --count "origin/$BASE_BRANCH..$ref")"
+            if (( ahead > best_ahead )); then
+              best_ahead="$ahead"
+              best_branch="$branch"
+            fi
+          done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin)
+
+          if [[ -z "$best_branch" ]]; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No commits found on $HEAD_BRANCH that are not already in $BASE_BRANCH. Nothing to create or merge."
+            echo "::notice::No branch contains commits ahead of $BASE_BRANCH. No PR will be created."
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "Branch comparison: $comparison"
+            echo "head_branch=$best_branch" >> "$GITHUB_OUTPUT"
+            echo "ahead=$best_ahead" >> "$GITHUB_OUTPUT"
+            echo "Selected branch: $best_branch ($best_ahead commits ahead of $BASE_BRANCH)"
           fi
 
       - name: Create or reuse pull request
         id: pr
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.select.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          HEAD_BRANCH: ${{ inputs.head_branch }}
-          BASE_BRANCH: ${{ inputs.base_branch }}
+          HEAD_BRANCH: ${{ steps.select.outputs.head_branch }}
+          BASE_BRANCH: main
           PR_TITLE: ${{ inputs.pr_title }}
           PR_BODY: ${{ inputs.pr_body }}
         shell: bash
@@ -107,7 +100,7 @@ jobs:
           echo "url=https://github.com/$GH_REPO/pull/$number" >> "$GITHUB_OUTPUT"
 
       - name: Merge pull request
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.select.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -120,25 +113,27 @@ jobs:
           echo "Merged PR #$PR_NUMBER"
 
       - name: Publish result
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.select.outputs.has_changes == 'true'
         env:
           PR_URL: ${{ steps.pr.outputs.url }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_BRANCH: ${{ steps.select.outputs.head_branch }}
         run: |
           {
             echo "## Pull request processed"
             echo
+            echo "- Selected branch: $HEAD_BRANCH"
             echo "- PR: $PR_URL"
             echo "- Number: #$PR_NUMBER"
             echo "- Result: merge command completed"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Explain no-op run
-        if: steps.changes.outputs.has_changes != 'true'
+        if: steps.select.outputs.has_changes != 'true'
         run: |
           {
             echo "## Nothing to merge"
             echo
-            echo "The selected head branch has no commits ahead of the base branch."
-            echo "Choose a branch containing real changes, then run this workflow again."
+            echo "No existing branch contains commits ahead of main."
+            echo "Create or push a branch with real project changes, then run this workflow again."
           } >> "$GITHUB_STEP_SUMMARY"
