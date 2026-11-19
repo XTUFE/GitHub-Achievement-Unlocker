@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          prs="$(gh api --paginate --slurp "repos/$GH_REPO/pulls?state=closed&per_page=$LIMIT" | jq -s 'add | map(select(.merged_at != null)) | .[:'"$LIMIT"']')"
+          prs="$(gh api "repos/$GH_REPO/pulls?state=closed&per_page=$LIMIT" | jq --argjson limit "$LIMIT" 'map(select(.merged_at != null)) | .[:$limit]')"
           merged="$(jq 'length' <<< "$prs")"
           coauthored=0
 
@@ -53,7 +53,7 @@ jobs:
 
           while IFS= read -r number; do
             [ -n "$number" ] || continue
-            commits="$(gh api --paginate "repos/$GH_REPO/pulls/$number/commits" --jq '[.[] | select(.commit.message | test("(?im)^Co-authored-by:"))] | length')"
+            commits="$(gh api --paginate --slurp "repos/$GH_REPO/pulls/$number/commits?per_page=100" | jq '[.[][] | select(.commit.message | test("(?im)^Co-authored-by:"))] | length')"
             if [ "$commits" -gt 0 ]; then
               coauthored=$((coauthored + commits))
               echo "- PR #$number: $commits commit(s) contain a Co-authored-by trailer" >> "$GITHUB_STEP_SUMMARY"
