@@ -3,24 +3,11 @@ name: Create and Merge Pull Request
 on:
   workflow_dispatch:
     inputs:
-      pr_title:
-        description: "Pull request title"
-        required: true
-        default: "Automated project update"
-        type: string
-      pr_body:
-        description: "Short description of the changes"
-        required: true
-        default: "Automatically selected branch with existing commits ahead of main."
-        type: string
       merge_method:
-        description: "How to merge the pull request"
+        description: "How to merge the generated pull request"
         required: true
         type: choice
-        options:
-          - squash
-          - merge
-          - rebase
+        options: [squash, merge, rebase]
         default: squash
 
 permissions:
@@ -28,81 +15,72 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: create-merge-pr-${{ github.repository }}
+  group: achievement-activity-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
-  create-and-merge:
+  create-commit-pr-merge:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out all branches
+      - name: Check out main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Find branch containing real commits
-        id: select
+      - name: Create a new run record commit
+        id: commit
         env:
-          BASE_BRANCH: main
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --prune
-          best_branch=""
-          best_ahead=0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="automation/run-${RUN_ID}"
+          file="activity-runs/run-${RUN_ID}.md"
+          mkdir -p activity-runs
+          cat > "$file" <<EOF
+          # Automated workflow run
 
-          while IFS= read -r ref; do
-            branch="${ref#origin/}"
-            [[ "$branch" == "$BASE_BRANCH" ]] && continue
-            [[ "$branch" == "HEAD" ]] && continue
+          - Repository: ${REPOSITORY}
+          - Workflow run: [#${RUN_NUMBER}](${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID})
+          - Triggered by: @${ACTOR}
+          - Source revision: ${SHA}
+          - Recorded at (UTC): $(date -u +'%Y-%m-%d %H:%M:%S')
 
-            # Only consider branches already based on the current main.
-            git merge-base --is-ancestor "origin/$BASE_BRANCH" "$ref" || continue
-            ahead="$(git rev-list --count "origin/$BASE_BRANCH..$ref")"
-            if (( ahead > best_ahead )); then
-              best_ahead="$ahead"
-              best_branch="$branch"
-            fi
-          done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin)
+          This file is an append-only execution record for the repository's automation.
+          EOF
+          git checkout -b "$branch"
+          git add "$file"
+          git commit -m "chore: record automation run ${RUN_NUMBER}"
+          git push --set-upstream origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-          if [[ -z "$best_branch" ]]; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No branch contains commits ahead of $BASE_BRANCH. No PR will be created."
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "head_branch=$best_branch" >> "$GITHUB_OUTPUT"
-            echo "ahead=$best_ahead" >> "$GITHUB_OUTPUT"
-            echo "Selected branch: $best_branch ($best_ahead commits ahead of $BASE_BRANCH)"
-          fi
-
-      - name: Create or reuse pull request
+      - name: Open pull request
         id: pr
-        if: steps.select.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          HEAD_BRANCH: ${{ steps.select.outputs.head_branch }}
-          BASE_BRANCH: main
-          PR_TITLE: ${{ inputs.pr_title }}
-          PR_BODY: ${{ inputs.pr_body }}
+          HEAD_BRANCH: ${{ steps.commit.outputs.branch }}
+          RUN_NUMBER: ${{ github.run_number }}
         shell: bash
         run: |
           set -euo pipefail
-          existing="$(gh pr list --repo "$GH_REPO" --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')"
-          if [[ -n "$existing" ]]; then
-            number="$existing"
-            echo "Reusing open PR #$number"
-          else
-            url="$(gh pr create --repo "$GH_REPO" --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --title "$PR_TITLE" --body "$PR_BODY")"
-            number="${url##*/}"
-            echo "Created PR #$number"
-          fi
+          url="$(gh pr create --repo "$GH_REPO" --head "$HEAD_BRANCH" --base main --title "chore: record automation run #${RUN_NUMBER}" --body "Adds the execution record generated by workflow run #${RUN_NUMBER} in activity-runs/.")"
+          number="${url##*/}"
           echo "number=$number" >> "$GITHUB_OUTPUT"
-          echo "url=https://github.com/$GH_REPO/pull/$number" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Merge pull request
-        if: steps.select.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -111,31 +89,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh pr merge "$PR_NUMBER" --repo "$GH_REPO" "--$MERGE_METHOD"
+          gh pr merge "$PR_NUMBER" --repo "$GH_REPO" "--$MERGE_METHOD" --delete-branch
           echo "Merged PR #$PR_NUMBER"
 
       - name: Publish result
-        if: steps.select.outputs.has_changes == 'true'
         env:
           PR_URL: ${{ steps.pr.outputs.url }}
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
-          HEAD_BRANCH: ${{ steps.select.outputs.head_branch }}
+          BRANCH: ${{ steps.commit.outputs.branch }}
+          FILE: ${{ steps.commit.outputs.file }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
         run: |
           {
-            echo "## Pull request processed"
+            echo "## Commit created and merged"
             echo
-            echo "- Selected branch: $HEAD_BRANCH"
-            echo "- PR: $PR_URL"
-            echo "- Number: #$PR_NUMBER"
-            echo "- Result: merge command completed"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Explain no-op run
-        if: steps.select.outputs.has_changes != 'true'
-        run: |
-          {
-            echo "## Nothing to merge"
-            echo
-            echo "No existing branch contains commits ahead of main."
-            echo "Create or push a branch with real project changes, then run this workflow again."
+            echo "- Branch: $BRANCH"
+            echo "- Commit: $COMMIT"
+            echo "- Change: $FILE"
+            echo "- Pull request: $PR_URL"
+            echo "- Result: merged into main"
           } >> "$GITHUB_STEP_SUMMARY"
