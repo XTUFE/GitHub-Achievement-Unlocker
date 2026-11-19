@@ -24,6 +24,14 @@ on:
         required: true
         type: number
         default: 10
+      issue_title:
+        description: "Real project task title (required only for Quickdraw)"
+        required: false
+        type: string
+      issue_body:
+        description: "Task context, expected behavior, and acceptance criteria"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -48,6 +56,8 @@ jobs:
       MODE: ${{ inputs.mode }}
       COUNT: ${{ inputs.count }}
       DELAY: ${{ inputs.delay }}
+      ISSUE_TITLE: ${{ inputs.issue_title }}
+      ISSUE_BODY: ${{ inputs.issue_body }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
