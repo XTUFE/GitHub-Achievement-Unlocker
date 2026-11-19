@@ -1,11 +1,88 @@
 #!/usr/bin/env python3
-"""Retired: the old achievement farming loop has been removed.
+"""Pull Shark runner based on XTUFE's original branch -> commit -> PR -> merge flow.
 
-Use the read-only GitHub Actions activity checker instead:
-Actions -> Achievement Activity Check -> Run workflow.
+Run a bounded number of cycles. Requires GITHUB_TOKEN with Contents and Pull requests
+read/write access. GitHub decides whether generated activity qualifies for achievements.
 """
+import argparse
+import base64
+import os
+import time
+import uuid
+from datetime import datetime, timezone
+
+import requests
+
+API = "https://api.github.com"
+TOKEN = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+OWNER = os.getenv("GITHUB_OWNER")
+REPO = os.getenv("GITHUB_REPO")
+BASE = os.getenv("GITHUB_BASE_BRANCH", "main")
+FILENAME = os.getenv("GITHUB_TARGET_FILE", "README.md")
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+
+
+def api(method, path, **kwargs):
+    response = SESSION.request(method, f"{API}{path}", timeout=30, **kwargs)
+    if not response.ok:
+        raise RuntimeError(f"{method} {path}: {response.status_code} {response.text[:500]}")
+    return response.json() if response.content else {}
+
+
+def config():
+    if not TOKEN or not OWNER or not REPO:
+        raise SystemExit("Set GITHUB_TOKEN, GITHUB_OWNER and GITHUB_REPO.")
+    api("GET", f"/repos/{OWNER}/{REPO}")
+
+
+def run_once(index):
+    branch = f"achievement/pull-shark-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    ref = api("GET", f"/repos/{OWNER}/{REPO}/git/ref/heads/{BASE}")
+    api("POST", f"/repos/{OWNER}/{REPO}/git/refs",
+        json={"ref": f"refs/heads/{branch}", "sha": ref["object"]["sha"]})
+
+    file_data = api("GET", f"/repos/{OWNER}/{REPO}/contents/{FILENAME}",
+                    params={"ref": branch})
+    content = base64.b64decode(file_data["content"]).decode("utf-8")
+    marker = f"<!-- achievement-run:{uuid.uuid4()} | {datetime.now(timezone.utc).isoformat()} -->"
+    updated = content.rstrip() + "\n\n" + marker + "\n"
+    message = f"docs: record repository maintenance run {index}"
+    api("PUT", f"/repos/{OWNER}/{REPO}/contents/{FILENAME}", json={
+        "message": message,
+        "content": base64.b64encode(updated.encode()).decode(),
+        "sha": file_data["sha"],
+        "branch": branch,
+    })
+    pr = api("POST", f"/repos/{OWNER}/{REPO}/pulls", json={
+        "title": message, "head": branch, "base": BASE,
+        "body": "Automated repository maintenance record.\n",
+    })
+    merged = api("PUT", f"/repos/{OWNER}/{REPO}/pulls/{pr['number']}/merge",
+                 json={"merge_method": "squash", "commit_title": message})
+    if not merged.get("merged"):
+        raise RuntimeError(f"PR #{pr['number']} was not merged: {merged}")
+    print(f"Merged PR #{pr['number']} ({branch})")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--count", type=int, default=1, help="Number of PR cycles (1-20).")
+    parser.add_argument("--delay", type=int, default=10, help="Seconds between cycles.")
+    args = parser.parse_args()
+    if not 1 <= args.count <= 20 or args.delay < 5:
+        raise SystemExit("--count must be 1..20 and --delay at least 5 seconds.")
+    config()
+    for index in range(1, args.count + 1):
+        run_once(index)
+        if index < args.count:
+            time.sleep(args.delay)
+
 
 if __name__ == "__main__":
-    print("This legacy automation has been retired.")
-    print("Open GitHub Actions and run: Achievement Activity Check")
-    print("The workflow uses the built-in read-only GITHUB_TOKEN; no PAT is needed.")
+    main()
