@@ -3,39 +3,17 @@ name: Achievement Automation
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: "Which achievement workflow to run"
-        required: true
-        type: choice
-        options:
-          - all
-          - pull-shark
-          - pair
-          - quickdraw
-          - yolo
-        default: all
-      count:
-        description: "Number of PR cycles (1-20; ignored for Quickdraw)"
-        required: true
-        type: number
-        default: 1
-      delay:
-        description: "Delay between PR cycles in seconds (minimum 5)"
-        required: true
-        type: number
-        default: 10
       issue_title:
-        description: "Real project task title (required only for Quickdraw)"
-        required: false
+        description: "Real project task title"
+        required: true
         type: string
       issue_body:
         description: "Task context, expected behavior, and acceptance criteria"
-        required: false
+        required: true
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
   issues: write
 
 concurrency:
@@ -43,24 +21,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  run-achievement-automation:
+  create-project-issue:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     env:
-      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      GH_TOKEN: ${{ secrets.GH_PAT }}
       GITHUB_OWNER: ${{ github.repository_owner }}
       GITHUB_REPO: ${{ github.event.repository.name }}
-      GITHUB_BASE_BRANCH: main
-      COAUTHOR_NAME: ${{ secrets.COAUTHOR_NAME }}
-      COAUTHOR_EMAIL: ${{ secrets.COAUTHOR_EMAIL }}
-      MODE: ${{ inputs.mode }}
-      COUNT: ${{ inputs.count }}
-      DELAY: ${{ inputs.delay }}
       ISSUE_TITLE: ${{ inputs.issue_title }}
       ISSUE_BODY: ${{ inputs.issue_body }}
     steps:
+      - name: Validate personal access token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GITHUB_TOKEN}" ]]; then
+            echo "::error::Add a repository secret named GH_PAT with Issues: Read and write access."
+            exit 1
+          fi
+
+          token_login="$(gh api user --jq .login)"
+          if [[ "${token_login,,}" != "${GITHUB_OWNER,,}" ]]; then
+            echo "::error::GH_PAT belongs to @${token_login}, but this workflow targets @${GITHUB_OWNER}."
+            exit 1
+          fi
+          echo "Authenticated as @${token_login}."
+
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -70,27 +61,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check requests
 
-      - name: Validate inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$COUNT" =~ ^[0-9]+$ ]] && (( COUNT >= 1 && COUNT <= 1000 ))
-          [[ "$DELAY" =~ ^[0-9]+$ ]] && (( DELAY >= 5 && DELAY <= 3600 ))
-          if [[ "$MODE" == "pair" || "$MODE" == "all" ]]; then
-            test -n "$COAUTHOR_NAME"
-            test -n "$COAUTHOR_EMAIL"
-          fi
-
-      - name: Run Pull Shark
-        if: inputs.mode == 'pull-shark' || inputs.mode == 'all' || inputs.mode == 'yolo'
-        run: python Pull_Shark.py --count "$COUNT" --delay "$DELAY"
-
-      - name: Run Pair Extraordinaire
-        if: inputs.mode == 'pair' || inputs.mode == 'all'
-        run: python Pair_Extraordinaire.py --count "$COUNT" --delay "$DELAY"
-
-      - name: Run Quickdraw
-        if: inputs.mode == 'quickdraw' || inputs.mode == 'all'
+      - name: Create the described project issue
         run: python Quickdraw.py
 
       - name: Publish run summary
@@ -98,12 +69,11 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Achievement automation"
+            echo "## Project issue automation"
             echo
-            echo "- Mode: $MODE"
-            echo "- PR cycles requested: $COUNT"
-            echo "- Actor: @${{ github.actor }}"
-            echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "- Repository: ${GITHUB_REPOSITORY}"
+            echo "- Requested by: @${GITHUB_ACTOR}"
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo
-            echo "GitHub determines whether any activity qualifies for achievements."
+            echo "Issue creation uses GH_PAT and leaves the issue open for normal project triage."
           } >> "$GITHUB_STEP_SUMMARY"
