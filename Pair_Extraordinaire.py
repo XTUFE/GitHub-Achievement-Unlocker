@@ -8,6 +8,7 @@ without their consent. GitHub determines achievement eligibility.
 import argparse
 import base64
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
