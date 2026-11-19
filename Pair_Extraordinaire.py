@@ -31,11 +31,51 @@ SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
 
+class GitHubAPIError(RuntimeError):
+    def __init__(self, method, path, response):
+        self.status_code = response.status_code
+        self.response_text = response.text[:500]
+        super().__init__(f"{method} {path}: {response.status_code} {self.response_text}")
+
+
 def api(method, path, **kwargs):
     response = SESSION.request(method, f"{API}{path}", timeout=30, **kwargs)
     if not response.ok:
-        raise RuntimeError(f"{method} {path}: {response.status_code} {response.text[:500]}")
+        raise GitHubAPIError(method, path, response)
     return response.json() if response.content else {}
+
+
+def merge_pr_with_retry(pr_number, commit_title):
+    """Recover when the base branch advances while GitHub is processing a merge."""
+    merge_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}/merge"
+    update_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}/update-branch"
+    last_error = None
+
+    for attempt in range(1, 6):
+        try:
+            result = api("PUT", merge_path, json={
+                "merge_method": "merge", "commit_title": commit_title
+            })
+            if result.get("merged"):
+                return result
+            raise RuntimeError(f"PR #{pr_number} was not merged: {result}")
+        except GitHubAPIError as exc:
+            last_error = exc
+            if exc.status_code != 405:
+                raise
+            print(f"Merge race on PR #{pr_number} (attempt {attempt}/5); updating branch...")
+            try:
+                api("PUT", update_path, json={})
+            except GitHubAPIError as update_error:
+                # GitHub can report that the branch is already current; retry the merge.
+                if update_error.status_code not in (405, 422):
+                    raise
+            time.sleep(min(2 * attempt, 10))
+
+    raise RuntimeError(
+        f"Could not merge PR #{pr_number} after 5 recovery attempts. "
+        f"Last error: {last_error}"
+    )
 
 
 def config():
@@ -74,10 +114,9 @@ def run_once(index):
         "head": branch, "base": BASE,
         "body": "Collaborative repository maintenance.\n",
     })
-    merged = api("PUT", f"/repos/{OWNER}/{REPO}/pulls/{pr['number']}/merge",
-                 json={"merge_method": "merge", "commit_title": f"Merge collaborative maintenance #{index}"})
-    if not merged.get("merged"):
-        raise RuntimeError(f"PR #{pr['number']} was not merged: {merged}")
+    merge_pr_with_retry(
+        pr["number"], f"Merge collaborative maintenance #{index}"
+    )
     print(f"Merged co-authored PR #{pr['number']} ({branch})")
 
 
