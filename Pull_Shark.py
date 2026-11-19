@@ -190,11 +190,11 @@ def run_once(index):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--count", type=int, default=1, help="Number of PR cycles (1-20).")
+    parser.add_argument("--count", type=int, default=1, help="Number of PR cycles (1-1000).")
     parser.add_argument("--delay", type=int, default=10, help="Seconds between cycles.")
     args = parser.parse_args()
-    if not 1 <= args.count <= 20 or args.delay < 5:
-        raise SystemExit("--count must be 1..20 and --delay at least 5 seconds.")
+    if not 1 <= args.count <= 1000 or args.delay < 5:
+        raise SystemExit("--count must be 1..1000 and --delay at least 5 seconds.")
     config()
     for index in range(1, args.count + 1):
         run_once(index)
