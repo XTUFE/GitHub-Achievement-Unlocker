@@ -7,6 +7,7 @@ read/write access. GitHub decides whether generated activity qualifies for achie
 import argparse
 import base64
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
