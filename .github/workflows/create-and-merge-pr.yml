@@ -62,8 +62,28 @@ jobs:
           gh api "repos/$GH_REPO/branches/$BASE_BRANCH" >/dev/null
           echo "Branches validated."
 
+      - name: Check for actual changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          comparison="$(gh api "repos/$GH_REPO/compare/$BASE_BRANCH...$HEAD_BRANCH" --jq '.status')"
+          if [[ "$comparison" == "identical" || "$comparison" == "behind" ]]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No commits found on $HEAD_BRANCH that are not already in $BASE_BRANCH. Nothing to create or merge."
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Branch comparison: $comparison"
+          fi
+
       - name: Create or reuse pull request
         id: pr
+        if: steps.changes.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -87,6 +107,7 @@ jobs:
           echo "url=https://github.com/$GH_REPO/pull/$number" >> "$GITHUB_OUTPUT"
 
       - name: Merge pull request
+        if: steps.changes.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -99,6 +120,7 @@ jobs:
           echo "Merged PR #$PR_NUMBER"
 
       - name: Publish result
+        if: steps.changes.outputs.has_changes == 'true'
         env:
           PR_URL: ${{ steps.pr.outputs.url }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -109,4 +131,14 @@ jobs:
             echo "- PR: $PR_URL"
             echo "- Number: #$PR_NUMBER"
             echo "- Result: merge command completed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain no-op run
+        if: steps.changes.outputs.has_changes != 'true'
+        run: |
+          {
+            echo "## Nothing to merge"
+            echo
+            echo "The selected head branch has no commits ahead of the base branch."
+            echo "Choose a branch containing real changes, then run this workflow again."
           } >> "$GITHUB_STEP_SUMMARY"
