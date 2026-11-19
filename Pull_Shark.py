@@ -42,8 +42,45 @@ def api(method, path, **kwargs):
     return response.json() if response.content else {}
 
 
+def sync_pr_branch_to_base(pr_number):
+    """Rebase this README-only PR logically by replaying its marker on latest main."""
+    pr = api("GET", f"/repos/{OWNER}/{REPO}/pulls/{pr_number}")
+    branch = pr["head"]["ref"]
+    base_data = api(
+        "GET", f"/repos/{OWNER}/{REPO}/contents/{FILENAME}",
+        params={"ref": BASE},
+    )
+    head_data = api(
+        "GET", f"/repos/{OWNER}/{REPO}/contents/{FILENAME}",
+        params={"ref": branch},
+    )
+    base_content = base64.b64decode(base_data["content"]).decode("utf-8")
+    head_content = base64.b64decode(head_data["content"]).decode("utf-8")
+
+    markers = re.findall(
+        r"<!-- (?:achievement-run|coauthored-maintenance):[^>]+ -->",
+        head_content,
+    )
+    if not markers:
+        raise RuntimeError(
+            f"Cannot safely resync PR #{pr_number}: its unique maintenance marker is missing."
+        )
+
+    updated = base_content.rstrip() + "\n\n" + markers[-1] + "\n"
+    if updated == head_content:
+        return
+
+    api("PUT", f"/repos/{OWNER}/{REPO}/contents/{FILENAME}", json={
+        "message": f"chore: sync PR #{pr_number} with latest {BASE}",
+        "content": base64.b64encode(updated.encode("utf-8")).decode("ascii"),
+        "sha": head_data["sha"],
+        "branch": branch,
+    })
+    print(f"Synced PR #{pr_number} README with latest {BASE}.")
+
+
 def merge_pr_with_retry(pr_number, commit_title):
-    """Retry transient 405 merge races without relying on the update-branch endpoint."""
+    """Recover from base-branch races by replaying the PR marker on latest main."""
     merge_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}/merge"
     pr_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}"
 
@@ -66,12 +103,14 @@ def merge_pr_with_retry(pr_number, commit_title):
 
             print(
                 f"Base branch changed while merging PR #{pr_number}; "
-                f"waiting for GitHub to refresh mergeability ({attempt}/5)."
+                f"resyncing its README from latest {BASE} ({attempt}/5)."
             )
+            sync_pr_branch_to_base(pr_number)
 
-            # GitHub calculates mergeability asynchronously. Do not call
-            # POST /update-branch here: that endpoint can return 404 for
-            # Actions tokens even though the PR itself is accessible.
+            # GitHub calculates mergeability asynchronously. Poll until the
+            # refreshed branch is mergeable; if another base commit lands,
+            # replay the unique marker again instead of calling update-branch.
+            sync_count = 1
             for poll in range(45):
                 current = api("GET", pr_path)
                 if current.get("state") != "open":
@@ -86,16 +125,20 @@ def merge_pr_with_retry(pr_number, commit_title):
                     break
 
                 state = current.get("mergeable_state")
-                if current.get("mergeable") is False and state in ("dirty", "blocked"):
+                if current.get("mergeable") is False and state == "blocked":
                     raise RuntimeError(
-                        f"PR #{pr_number} cannot be merged automatically: {state}."
+                        f"PR #{pr_number} is blocked by repository rules."
                     )
+
+                if state == "dirty" and poll in (9, 19) and sync_count < 3:
+                    sync_pr_branch_to_base(pr_number)
+                    sync_count += 1
 
                 time.sleep(2)
             else:
                 raise RuntimeError(
-                    f"GitHub did not refresh mergeability for PR #{pr_number} "
-                    "within 90 seconds; rerun the workflow."
+                    f"PR #{pr_number} did not become mergeable after syncing with "
+                    f"latest {BASE}; check for branch protection or external changes."
                 )
 
     raise RuntimeError(f"Could not merge PR #{pr_number} after five attempts.")
