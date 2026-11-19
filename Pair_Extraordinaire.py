@@ -69,17 +69,27 @@ def sync_pr_branch_to_base(pr_number):
             f"Cannot safely resync PR #{pr_number}: its unique maintenance marker is missing."
         )
 
+    # A content-only overwrite is not enough: Git can still see both sides
+    # appending to the same README region. Reset this automation-owned branch
+    # to the latest base commit first, then replay only its unique marker.
+    base_ref = api("GET", f"/repos/{OWNER}/{REPO}/git/ref/heads/{BASE}")
+    api("PATCH", f"/repos/{OWNER}/{REPO}/git/refs/heads/{branch}", json={
+        "sha": base_ref["object"]["sha"],
+        "force": True,
+    })
+    refreshed_head = api(
+        "GET", f"/repos/{OWNER}/{REPO}/contents/{FILENAME}",
+        params={"ref": branch},
+    )
     updated = base_content.rstrip() + "\n\n" + markers[-1] + "\n"
-    if updated == head_content:
-        return
 
     api("PUT", f"/repos/{OWNER}/{REPO}/contents/{FILENAME}", json={
-        "message": f"chore: sync PR #{pr_number} with latest {BASE}",
+        "message": f"chore: rebase PR #{pr_number} onto latest {BASE}",
         "content": base64.b64encode(updated.encode("utf-8")).decode("ascii"),
-        "sha": head_data["sha"],
+        "sha": refreshed_head["sha"],
         "branch": branch,
     })
-    print(f"Synced PR #{pr_number} README with latest {BASE}.")
+    print(f"Rebased PR #{pr_number} onto latest {BASE} and replayed its marker.")
 
 
 def merge_pr_with_retry(pr_number, commit_title):
