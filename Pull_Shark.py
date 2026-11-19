@@ -64,7 +64,7 @@ def run_once(index):
         "body": "Automated repository maintenance record.\n",
     })
     merged = api("PUT", f"/repos/{OWNER}/{REPO}/pulls/{pr['number']}/merge",
-                 json={"merge_method": "squash", "commit_title": message})
+                 json={"merge_method": "merge", "commit_title": message})
     if not merged.get("merged"):
         raise RuntimeError(f"PR #{pr['number']} was not merged: {merged}")
     print(f"Merged PR #{pr['number']} ({branch})")
