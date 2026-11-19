@@ -43,36 +43,36 @@ def api(method, path, **kwargs):
 
 
 def merge_pr_with_retry(pr_number, commit_title):
-    """Recover when the base branch advances while GitHub is processing a merge."""
+    """Refresh a stale PR branch and retry if main advanced during a merge."""
     merge_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}/merge"
     update_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}/update-branch"
-    last_error = None
 
     for attempt in range(1, 6):
         try:
             result = api("PUT", merge_path, json={
-                "merge_method": "merge", "commit_title": commit_title
+                "merge_method": "merge",
+                "commit_title": commit_title,
             })
             if result.get("merged"):
                 return result
             raise RuntimeError(f"PR #{pr_number} was not merged: {result}")
         except GitHubAPIError as exc:
-            last_error = exc
-            if exc.status_code != 405:
+            if exc.status_code != 405 or "Base branch was modified" not in exc.response_text or attempt == 5:
                 raise
-            print(f"Merge race on PR #{pr_number} (attempt {attempt}/5); updating branch...")
-            try:
-                api("PUT", update_path, json={})
-            except GitHubAPIError as update_error:
-                # GitHub can report that the branch is already current; retry the merge.
-                if update_error.status_code not in (405, 422):
-                    raise
-            time.sleep(min(2 * attempt, 10))
+            print(f"Base branch advanced during PR #{pr_number}; updating branch ({attempt}/5).")
+            api("POST", update_path, json={})
+            for _ in range(30):
+                current = api("GET", f"/repos/{OWNER}/{REPO}/pulls/{pr_number}")
+                if current.get("mergeable") is True:
+                    break
+                state = current.get("mergeable_state")
+                if current.get("mergeable") is False and state not in ("unknown", "unstable"):
+                    raise RuntimeError(f"PR #{pr_number} remains unmergeable after update: {state}")
+                time.sleep(2)
+            else:
+                raise RuntimeError(f"PR #{pr_number} did not become mergeable after branch update.")
+    raise RuntimeError(f"Could not merge PR #{pr_number} after five attempts.")
 
-    raise RuntimeError(
-        f"Could not merge PR #{pr_number} after 5 recovery attempts. "
-        f"Last error: {last_error}"
-    )
 
 
 def config():
