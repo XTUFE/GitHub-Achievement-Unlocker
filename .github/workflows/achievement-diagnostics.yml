@@ -1,0 +1,150 @@
+name: Achievement Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Existing issue number to check for Quickdraw timing (optional)"
+        required: false
+        type: string
+      pr_number:
+        description: "Existing merged PR number to inspect for co-author trailers (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  diagnose:
+    name: Read-only achievement diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate inputs
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$ISSUE_NUMBER" && -z "$PR_NUMBER" ]]; then
+            echo "::error::Provide an issue number, a PR number, or both."
+            exit 1
+          fi
+          for value in "$ISSUE_NUMBER" "$PR_NUMBER"; do
+            [[ -z "$value" || "$value" =~ ^[1-9][0-9]*$ ]] || {
+              echo "::error::Issue and PR numbers must be positive integers."
+              exit 1
+            }
+          done
+
+      - name: Diagnose Quickdraw issue timing
+        if: inputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          issue="$(gh api "repos/$GH_REPO/issues/$ISSUE_NUMBER")"
+          created="$(jq -r '.created_at' <<< "$issue")"
+          closed="$(jq -r '.closed_at // empty' <<< "$issue")"
+          state="$(jq -r '.state' <<< "$issue")"
+          title="$(jq -r '.title' <<< "$issue")"
+          {
+            echo "## Quickdraw issue #$ISSUE_NUMBER"
+            echo
+            echo "- Title: $title"
+            echo "- State: $state"
+            echo "- Created: $created"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ -z "$closed" ]]; then
+            echo "- Closed: not closed yet" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Result: **Not eligible based on current issue state**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            seconds="$(python -c 'from datetime import datetime; import sys; a=datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")); b=datetime.fromisoformat(sys.argv[2].replace("Z","+00:00")); print(int((b-a).total_seconds()))' "$created" "$closed")"
+            echo "- Closed: $closed" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Time to close: **$seconds seconds**" >> "$GITHUB_STEP_SUMMARY"
+            if (( seconds >= 0 && seconds < 300 )); then
+              echo "- Timing check: **Within five minutes**" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- Timing check: **Outside five minutes**" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Inspect merged PR co-author metadata
+        if: inputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_COAUTHOR_NAME: ${{ secrets.COAUTHOR_NAME }}
+          EXPECTED_COAUTHOR_EMAIL: ${{ secrets.COAUTHOR_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
+          state="$(jq -r '.state' <<< "$pr")"
+          merged="$(jq -r '.merged' <<< "$pr")"
+          author="$(jq -r '.user.login' <<< "$pr")"
+          title="$(jq -r '.title' <<< "$pr")"
+          {
+            echo
+            echo "## Pair Extraordinaire PR #$PR_NUMBER"
+            echo
+            echo "- Title: $title"
+            echo "- PR author: @$author"
+            echo "- State: $state"
+            echo "- Merged: $merged"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$merged" != "true" ]]; then
+            echo "- Result: **PR is not merged; this PR cannot currently support a merged-PR co-author check.**" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          commits="$(gh api --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/commits?per_page=100")"
+          python - "$commits" "$EXPECTED_COAUTHOR_NAME" "$EXPECTED_COAUTHOR_EMAIL" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, re, sys
+          pages = json.loads(sys.argv[1])
+          expected_name = sys.argv[2].strip()
+          expected_email = sys.argv[3].strip().lower()
+          commits = [item for page in pages for item in page]
+          trailer_re = re.compile(r"^Co-authored-by:\\s*(.*?)\\s*<([^<>]+)>\\s*$", re.I | re.M)
+          matches = []
+          for item in commits:
+              message = item.get("commit", {}).get("message", "")
+              for name, email in trailer_re.findall(message):
+                  matches.append((item.get("sha", "")[:7], name.strip(), email.strip().lower()))
+          print(f"- Commits inspected: **{len(commits)}**")
+          print(f"- Co-authored-by trailers found: **{len(matches)}**")
+          if not expected_name or not expected_email:
+              print("- Secret check: **COAUTHOR_NAME or COAUTHOR_EMAIL is missing**")
+          else:
+              exact = [m for m in matches if m[1].casefold() == expected_name.casefold() and m[2] == expected_email]
+              email_only = [m for m in matches if m[2] == expected_email]
+              print(f"- Trailer matching configured name and email: **{len(exact)}**")
+              print(f"- Trailer matching configured email: **{len(email_only)}**")
+              if exact:
+                  print("- Result: **Configured co-author trailer is present in merged PR commits.**")
+              elif email_only:
+                  print("- Result: **Email is present, but the co-author name differs from the configured secret.**")
+              else:
+                  print("- Result: **Configured co-author email was not found in this PR's commit trailers.**")
+          for sha, name, email in matches:
+              # Avoid publishing email addresses into workflow logs.
+              print(f"- Trailer in commit {sha}: {name} <email hidden>")
+          print()
+          print("> This checks commit-message metadata only. GitHub's internal co-author attribution and achievement eligibility cannot be confirmed through this report; GitHub makes the final decision.")
+          PY
+
+      - name: Publish diagnostic note
+        if: always()
+        run: |
+          {
+            echo
+            echo "> Read-only diagnostic: no issues or pull requests were created, changed, or merged."
+          } >> "$GITHUB_STEP_SUMMARY"
