@@ -1,0 +1,70 @@
+name: Achievement Activity Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many recently updated PRs to inspect (1-50)"
+        required: true
+        default: "20"
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: achievement-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    name: Inspect genuine contribution activity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate input
+        shell: bash
+        run: |
+          if ! [[ "${{ inputs.limit }}" =~ ^([1-9]|[1-4][0-9]|50)$ ]]; then
+            echo "::error::Limit must be an integer from 1 to 50."
+            exit 1
+          fi
+
+      - name: Check merged pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LIMIT: ${{ inputs.limit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prs="$(gh api --paginate --slurp "repos/$GH_REPO/pulls?state=closed&per_page=$LIMIT" | jq -s 'add | map(select(.merged_at != null)) | .[:'"$LIMIT"']')"
+          merged="$(jq 'length' <<< "$prs")"
+          coauthored=0
+
+          {
+            echo "## Contribution activity"
+            echo
+            echo "- Repository: `$GH_REPO`"
+            echo "- Merged PRs inspected: **$merged**"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          while IFS= read -r number; do
+            [ -n "$number" ] || continue
+            commits="$(gh api --paginate "repos/$GH_REPO/pulls/$number/commits" --jq '[.[] | select(.commit.message | test("(?im)^Co-authored-by:"))] | length')"
+            if [ "$commits" -gt 0 ]; then
+              coauthored=$((coauthored + commits))
+              echo "- PR #$number: $commits commit(s) contain a Co-authored-by trailer" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done < <(jq -r '.[].number' <<< "$prs")
+
+          {
+            echo
+            echo "- Commits with co-author trailers found: **$coauthored**"
+            echo
+            echo "> This is a read-only activity report. GitHub decides achievement eligibility; this workflow cannot grant badges or manufacture qualifying contributions."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Inspection complete: $merged merged PRs; $coauthored co-authored commit(s)."
