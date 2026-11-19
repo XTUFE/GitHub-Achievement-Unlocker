@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Open and immediately close a pull request for the Quickdraw workflow.
-
-This repository has GitHub Issues disabled, so use a short-lived PR instead.
-"""
-import base64
+"""Create and immediately close a GitHub issue for the Quickdraw achievement."""
 import os
 import time
 import uuid
@@ -13,7 +9,6 @@ import requests
 token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
 owner = os.getenv("GITHUB_OWNER")
 repo = os.getenv("GITHUB_REPO")
-base_branch = os.getenv("GITHUB_BASE_BRANCH", "main")
 if not all((token, owner, repo)):
     raise SystemExit("Set GITHUB_TOKEN, GITHUB_OWNER and GITHUB_REPO.")
 
@@ -41,38 +36,22 @@ def request(method, url, **kwargs):
     return response.json() if response.content else {}
 
 
-# Create a unique branch from the current base.
+# Quickdraw is based on closing an issue within five minutes of opening it.
+# Keep the issue unique so every workflow run is independently auditable.
 suffix = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
-branch = f"quickdraw/{suffix}"
-base_ref = request("GET", f"{api}/git/ref/heads/{base_branch}")
-base_sha = base_ref["object"]["sha"]
-request("POST", f"{api}/git/refs", json={
-    "ref": f"refs/heads/{branch}",
-    "sha": base_sha,
+issue = request("POST", f"{api}/issues", json={
+    "title": f"Quickdraw workflow check {suffix}",
+    "body": (
+        "Temporary issue created by the GitHub Achievement Unlocker "
+        f"Quickdraw workflow. Run marker: {uuid.uuid4()}."
+    ),
 })
 
-# Add a harmless unique README marker so GitHub accepts the PR.
-readme = request("GET", f"{api}/contents/README.md?ref={base_branch}")
-raw = base64.b64decode(readme["content"]).decode("utf-8")
-marker = f"<!-- quickdraw:{uuid.uuid4()} -->"
-updated = raw.rstrip() + "\n\n" + marker + "\n"
-request("PUT", f"{api}/contents/README.md", json={
-    "message": f"chore: quickdraw verification {suffix}",
-    "content": base64.b64encode(updated.encode("utf-8")).decode("ascii"),
-    "sha": readme["sha"],
-    "branch": branch,
-})
-
-# Open and close the PR immediately (well within the five-minute window).
-pr = request("POST", f"{api}/pulls", json={
-    "title": "Quickdraw workflow verification",
-    "body": "Short-lived pull request created and closed to verify Quickdraw automation.",
-    "head": branch,
-    "base": base_branch,
-})
-closed = request("PATCH", f"{api}/pulls/{pr['number']}", json={
+issue_number = issue["number"]
+closed = request("PATCH", f"{api}/issues/{issue_number}", json={
     "state": "closed",
 })
 if closed.get("state") != "closed":
-    raise RuntimeError(f"PR #{pr['number']} was not closed successfully.")
-print(f"Opened and closed PR #{pr['number']} in one run.")
+    raise RuntimeError(f"Issue #{issue_number} was not closed successfully.")
+
+print(f"Opened and closed issue #{issue_number} in one run.")
