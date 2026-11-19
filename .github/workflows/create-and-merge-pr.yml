@@ -1,0 +1,112 @@
+name: Create and Merge Pull Request
+
+on:
+  workflow_dispatch:
+    inputs:
+      head_branch:
+        description: "Existing branch containing the actual changes"
+        required: true
+        type: string
+      base_branch:
+        description: "Target branch"
+        required: true
+        default: "main"
+        type: string
+      pr_title:
+        description: "Pull request title"
+        required: true
+        default: "Update project"
+        type: string
+      pr_body:
+        description: "Short description of the changes"
+        required: true
+        default: "Automated pull request for the changes on the selected branch."
+        type: string
+      merge_method:
+        description: "How to merge the pull request"
+        required: true
+        type: choice
+        options:
+          - squash
+          - merge
+          - rebase
+        default: squash
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: create-merge-pr-${{ github.repository }}-${{ inputs.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  create-and-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate branches and repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_BRANCH" == "$BASE_BRANCH" ]]; then
+            echo "::error::Head and base branches must be different."
+            exit 1
+          fi
+          gh api "repos/$GH_REPO/branches/$HEAD_BRANCH" >/dev/null
+          gh api "repos/$GH_REPO/branches/$BASE_BRANCH" >/dev/null
+          echo "Branches validated."
+
+      - name: Create or reuse pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          PR_TITLE: ${{ inputs.pr_title }}
+          PR_BODY: ${{ inputs.pr_body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --repo "$GH_REPO" --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            number="$existing"
+            echo "Reusing open PR #$number"
+          else
+            url="$(gh pr create --repo "$GH_REPO" --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --title "$PR_TITLE" --body "$PR_BODY")"
+            number="${url##*/}"
+            echo "Created PR #$number"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/$GH_REPO/pull/$number" >> "$GITHUB_OUTPUT"
+
+      - name: Merge pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MERGE_METHOD: ${{ inputs.merge_method }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR_NUMBER" --repo "$GH_REPO" "--$MERGE_METHOD"
+          echo "Merged PR #$PR_NUMBER"
+
+      - name: Publish result
+        env:
+          PR_URL: ${{ steps.pr.outputs.url }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          {
+            echo "## Pull request processed"
+            echo
+            echo "- PR: $PR_URL"
+            echo "- Number: #$PR_NUMBER"
+            echo "- Result: merge command completed"
+          } >> "$GITHUB_STEP_SUMMARY"
