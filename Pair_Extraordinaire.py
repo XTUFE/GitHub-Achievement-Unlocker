@@ -75,7 +75,7 @@ def run_once(index):
         "body": "Collaborative repository maintenance.\n",
     })
     merged = api("PUT", f"/repos/{OWNER}/{REPO}/pulls/{pr['number']}/merge",
-                 json={"merge_method": "squash", "commit_title": f"Merge collaborative maintenance #{index}"})
+                 json={"merge_method": "merge", "commit_title": f"Merge collaborative maintenance #{index}"})
     if not merged.get("merged"):
         raise RuntimeError(f"PR #{pr['number']} was not merged: {merged}")
     print(f"Merged co-authored PR #{pr['number']} ({branch})")
