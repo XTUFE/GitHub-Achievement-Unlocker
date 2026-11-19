@@ -46,9 +46,9 @@ def api(method, path, **kwargs):
 
 
 def merge_pr_with_retry(pr_number, commit_title):
-    """Refresh a stale PR branch and retry if main advanced during a merge."""
+    """Retry transient 405 merge races without relying on the update-branch endpoint."""
     merge_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}/merge"
-    update_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}/update-branch"
+    pr_path = f"/repos/{OWNER}/{REPO}/pulls/{pr_number}"
 
     for attempt in range(1, 6):
         try:
@@ -60,20 +60,47 @@ def merge_pr_with_retry(pr_number, commit_title):
                 return result
             raise RuntimeError(f"PR #{pr_number} was not merged: {result}")
         except GitHubAPIError as exc:
-            if exc.status_code != 405 or "Base branch was modified" not in exc.response_text or attempt == 5:
+            is_base_race = (
+                exc.status_code == 405
+                and "Base branch was modified" in exc.response_text
+            )
+            if not is_base_race or attempt == 5:
                 raise
-            print(f"Base branch advanced during PR #{pr_number}; updating branch ({attempt}/5).")
-            api("POST", update_path, json={})
-            for _ in range(30):
-                current = api("GET", f"/repos/{OWNER}/{REPO}/pulls/{pr_number}")
+
+            print(
+                f"Base branch changed while merging PR #{pr_number}; "
+                f"waiting for GitHub to refresh mergeability ({attempt}/5)."
+            )
+
+            # GitHub calculates mergeability asynchronously. Do not call
+            # POST /update-branch here: that endpoint can return 404 for
+            # Actions tokens even though the PR itself is accessible.
+            for poll in range(45):
+                current = api("GET", pr_path)
+                if current.get("state") != "open":
+                    if current.get("merged"):
+                        return {"merged": True, "already_merged": True}
+                    raise RuntimeError(
+                        f"PR #{pr_number} is no longer open; state={current.get('state')}."
+                    )
+
                 if current.get("mergeable") is True:
+                    print(f"PR #{pr_number} is mergeable again; retrying merge.")
                     break
+
                 state = current.get("mergeable_state")
-                if current.get("mergeable") is False and state not in ("unknown", "unstable"):
-                    raise RuntimeError(f"PR #{pr_number} remains unmergeable after update: {state}")
+                if current.get("mergeable") is False and state in ("dirty", "blocked"):
+                    raise RuntimeError(
+                        f"PR #{pr_number} cannot be merged automatically: {state}."
+                    )
+
                 time.sleep(2)
             else:
-                raise RuntimeError(f"PR #{pr_number} did not become mergeable after branch update.")
+                raise RuntimeError(
+                    f"GitHub did not refresh mergeability for PR #{pr_number} "
+                    "within 90 seconds; rerun the workflow."
+                )
+
     raise RuntimeError(f"Could not merge PR #{pr_number} after five attempts.")
 
 
