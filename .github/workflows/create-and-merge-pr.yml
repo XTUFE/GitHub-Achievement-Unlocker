@@ -74,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$COUNT" =~ ^[0-9]+$ ]] && (( COUNT >= 1 && COUNT <= 20 ))
+          [[ "$COUNT" =~ ^[0-9]+$ ]] && (( COUNT >= 1 && COUNT <= 1000 ))
           [[ "$DELAY" =~ ^[0-9]+$ ]] && (( DELAY >= 5 && DELAY <= 3600 ))
           if [[ "$MODE" == "pair" || "$MODE" == "all" ]]; then
             test -n "$COAUTHOR_NAME"
